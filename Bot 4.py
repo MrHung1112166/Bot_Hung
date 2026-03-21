@@ -8,8 +8,8 @@ from datetime import datetime
 SYMBOLS = ["HPG.VN", "DGC.VN", "FPT.VN","BSR.VN","PVD.VN","PVT.VN","VIC.VN"]
 INTERVAL = "1d"
 
-TOKEN = "8749505514:AAFvhujZ-MI1K4TFD6PrqlNGLIcIC0hU5xU"
-CHAT_ID = "1356499572"
+TOKEN = "xxxx"
+CHAT_ID = "xxxx"
 
 # RSI
 RSI_PERIOD = 14
