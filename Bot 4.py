@@ -6,10 +6,10 @@ from datetime import datetime
 import os
 
 # ====== CONFIG ======
-SYMBOLS = ["HPG.VN", "DGC.VN"]   # thêm mã tại đây
+SYMBOLS = ["HPG.VN", "DGC.VN","VIC.VN","NVL.VN","BSR.VN"]
 INTERVAL = "1d"
 
-# Telegram (set trong Render ENV)
+# Telegram ENV (Render)
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -28,8 +28,8 @@ def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        print("Telegram send error")
+    except Exception as e:
+        print("Telegram error:", e)
 
 def get_updates(offset=None):
     try:
@@ -71,24 +71,22 @@ def get_signal(symbol):
         # MA crossover
         if prev['MA20'] < prev['MA50'] and curr['MA20'] > curr['MA50']:
             signal = "BUY"
-
         elif prev['MA20'] > prev['MA50'] and curr['MA20'] < curr['MA50']:
             signal = "SELL"
 
-        # RSI filter riêng
+        # RSI filter
         if curr['MA20'] > curr['MA50'] and curr['RSI'] < RSI_OVERBOUGHT:
             rsi_signal = "BUY_RSI"
-
         elif curr['MA20'] < curr['MA50'] and curr['RSI'] > RSI_OVERSOLD:
             rsi_signal = "SELL_RSI"
 
         return signal, rsi_signal, curr
 
     except Exception as e:
-        print("Error:", e)
+        print("Data error:", e)
         return None, None, None
 
-# ====== COMMAND HANDLER ======
+# ====== COMMAND ======
 def handle_command(text):
     global running
 
@@ -97,29 +95,28 @@ def handle_command(text):
 
     elif text == "/help":
         send_telegram("""
-📌 COMMAND LIST:
-/start - start bot
-/status - trạng thái
-/run - chạy bot
-/stop - dừng bot
-/price - xem giá tất cả mã
-/scan - scan ngay lập tức
+📌 COMMAND:
+/start
+/status
+/run
+/stop
+/price
+/scan
 """)
 
     elif text == "/status":
-        status = "🟢 RUNNING" if running else "🔴 STOPPED"
-        send_telegram(status)
+        send_telegram("🟢 RUNNING" if running else "🔴 STOPPED")
 
     elif text == "/run":
         running = True
-        send_telegram("🚀 Bot started")
+        send_telegram("🚀 Started")
 
     elif text == "/stop":
         running = False
-        send_telegram("⛔ Bot stopped")
+        send_telegram("⛔ Stopped")
 
     elif text == "/price":
-        msg = "📊 PRICE CHECK:\n"
+        msg = "📊 PRICE:\n"
         for sym in SYMBOLS:
             _, _, data = get_signal(sym)
             if data is not None:
@@ -132,7 +129,7 @@ def handle_command(text):
     else:
         send_telegram("❓ Unknown command")
 
-# ====== SCAN FUNCTION ======
+# ====== SCAN ======
 def scan_market():
     global last_signals
 
@@ -148,14 +145,14 @@ def scan_market():
         rsi = data['RSI']
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # MA signal
+        # ===== MA SIGNAL =====
         if signal and last_signals.get(sym) != signal:
             msg = f"""
 📊 {sym}
 ⏰ {now}
 
-🔥 SIGNAL: {signal}
-💰 Price: {round(price,2)}
+🔥 {signal}
+💰 {round(price,2)}
 
 MA20: {round(ma20,2)}
 MA50: {round(ma50,2)}
@@ -164,30 +161,30 @@ RSI: {round(rsi,1)}
             send_telegram(msg)
             last_signals[sym] = signal
 
-        # RSI signal riêng
-        if rsi_signal:
+        # ===== RSI SIGNAL (ANTI SPAM) =====
+        if rsi_signal and last_signals.get(sym+"_RSI") != rsi_signal:
             msg = f"""
 📊 {sym}
-
-⚡ RSI FILTER SIGNAL: {rsi_signal}
+⚡ RSI SIGNAL: {rsi_signal}
 RSI: {round(rsi,1)}
 """
             send_telegram(msg)
+            last_signals[sym+"_RSI"] = rsi_signal
 
-# ====== MAIN LOOP ======
+# ====== MAIN ======
 def run_bot():
     global update_id
 
     send_telegram("🤖 Bot started (Render)")
 
-    # init update_id tránh spam cũ
+    # init update_id
     updates = get_updates()
     if updates["result"]:
         update_id = updates["result"][-1]["update_id"] + 1
 
     while True:
         try:
-            # ===== đọc Telegram =====
+            # ===== TELEGRAM =====
             updates = get_updates(update_id)
 
             for item in updates["result"]:
@@ -198,23 +195,24 @@ def run_bot():
                     print("Command:", text)
                     handle_command(text)
 
-            # ===== chạy scan =====
+            # ===== SCAN =====
             if running:
                 scan_market()
 
+            # ===== TIME CONTROL =====
             now = datetime.now()
 
-# giờ giao dịch: 9h - 15h
-if 9 <= now.hour < 15:
-    sleep_time = 180   # 3 phút
-else:
-    sleep_time = 1800  # 30 phút
+            if 9 <= now.hour < 15:
+                sleep_time = 180     # 3 phút
+            else:
+                sleep_time = 1800    # 30 phút
 
-time.sleep(sleep_time)
+            print(f"Sleeping {sleep_time}s...")
+            time.sleep(sleep_time)
 
         except Exception as e:
-            print("MAIN LOOP ERROR:", e)
-            time.sleep(1800)
+            print("ERROR:", e)
+            time.sleep(60)
 
 # ====== RUN ======
 if __name__ == "__main__":
