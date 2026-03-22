@@ -3,14 +3,15 @@ import pandas as pd
 import time
 import requests
 from datetime import datetime
+import os
 
 # ====== CONFIG ======
 SYMBOLS = ["HPG.VN", "DGC.VN"]   # thêm mã tại đây
 INTERVAL = "1d"
 
 # Telegram (set trong Render ENV)
-TOKEN = "YOUR_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 # Trading params
 RSI_PERIOD = 14
