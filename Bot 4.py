@@ -8,9 +8,14 @@ from datetime import datetime
 SYMBOLS = ["HPG.VN", "DGC.VN"]   # thêm mã tại đây
 INTERVAL = "1d"
 
-# Telegram
-TOKEN = "YOUR_NEW_TOKEN"
+# Telegram (set trong Render ENV)
+TOKEN = "YOUR_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
+
+# Trading params
+RSI_PERIOD = 14
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
 
 # ====== STATE ======
 running = True
@@ -19,45 +24,40 @@ update_id = None
 
 # ====== TELEGRAM ======
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except:
-        pass
+        print("Telegram send error")
 
 def get_updates(offset=None):
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    params = {"timeout": 100}
-    if offset:
-        params["offset"] = offset
     try:
+        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+        params = {"timeout": 10, "offset": offset}
         res = requests.get(url, params=params)
         return res.json()
     except:
-        return {}
+        return {"result": []}
 
-# ====== RSI ======
+# ====== INDICATORS ======
 def compute_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
 # ====== SIGNAL ======
 def get_signal(symbol):
     try:
-        data = yf.download(symbol, period="3mo", interval=INTERVAL, progress=False)
-
-        if data.empty:
-            return None
+        data = yf.download(symbol, period="3mo", interval=INTERVAL)
 
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
 
         data['MA20'] = data['Close'].rolling(20).mean()
         data['MA50'] = data['Close'].rolling(50).mean()
-        data['RSI'] = compute_rsi(data['Close'])
+        data['RSI'] = compute_rsi(data['Close'], RSI_PERIOD)
 
         data = data.dropna()
 
@@ -65,46 +65,49 @@ def get_signal(symbol):
         curr = data.iloc[-1]
 
         signal = None
-        rsi_note = None
+        rsi_signal = None
 
-        # ===== CROSS =====
+        # MA crossover
         if prev['MA20'] < prev['MA50'] and curr['MA20'] > curr['MA50']:
             signal = "BUY"
+
         elif prev['MA20'] > prev['MA50'] and curr['MA20'] < curr['MA50']:
             signal = "SELL"
 
-        # ===== RSI FILTER =====
-        if signal == "BUY" and curr['RSI'] < 70:
-            rsi_note = "RSI OK (<70)"
-        elif signal == "SELL" and curr['RSI'] > 30:
-            rsi_note = "RSI OK (>30)"
-        else:
-            rsi_note = "RSI WARNING"
+        # RSI filter riêng
+        if curr['MA20'] > curr['MA50'] and curr['RSI'] < RSI_OVERBOUGHT:
+            rsi_signal = "BUY_RSI"
 
-        return {
-            "symbol": symbol,
-            "signal": signal,
-            "price": round(curr['Close'], 2),
-            "ma20": round(curr['MA20'], 2),
-            "ma50": round(curr['MA50'], 2),
-            "rsi": round(curr['RSI'], 2),
-            "rsi_note": rsi_note
-        }
+        elif curr['MA20'] < curr['MA50'] and curr['RSI'] > RSI_OVERSOLD:
+            rsi_signal = "SELL_RSI"
+
+        return signal, rsi_signal, curr
 
     except Exception as e:
-        print("Error:", symbol, e)
-        return None
+        print("Error:", e)
+        return None, None, None
 
 # ====== COMMAND HANDLER ======
 def handle_command(text):
     global running
 
     if text == "/start":
-        send_telegram("🤖 Bot online")
+        send_telegram("🤖 Bot ONLINE")
+
+    elif text == "/help":
+        send_telegram("""
+📌 COMMAND LIST:
+/start - start bot
+/status - trạng thái
+/run - chạy bot
+/stop - dừng bot
+/price - xem giá tất cả mã
+/scan - scan ngay lập tức
+""")
 
     elif text == "/status":
         status = "🟢 RUNNING" if running else "🔴 STOPPED"
-        send_telegram(f"Status: {status}")
+        send_telegram(status)
 
     elif text == "/run":
         running = True
@@ -115,87 +118,94 @@ def handle_command(text):
         send_telegram("⛔ Bot stopped")
 
     elif text == "/price":
-        msg = "📊 MARKET SNAPSHOT\n\n"
-
-        for symbol in SYMBOLS:
-            result = get_signal(symbol)
-            if result:
-                msg += f"{symbol}\n"
-                msg += f"Price: {result['price']}\n"
-                msg += f"MA20: {result['ma20']} | MA50: {result['ma50']}\n"
-                msg += f"RSI: {result['rsi']}\n\n"
-
+        msg = "📊 PRICE CHECK:\n"
+        for sym in SYMBOLS:
+            _, _, data = get_signal(sym)
+            if data is not None:
+                msg += f"{sym}: {round(data['Close'],2)} | RSI {round(data['RSI'],1)}\n"
         send_telegram(msg)
 
-    elif text == "/list":
-        send_telegram(f"📌 Symbols: {', '.join(SYMBOLS)}")
+    elif text == "/scan":
+        scan_market()
 
     else:
         send_telegram("❓ Unknown command")
 
+# ====== SCAN FUNCTION ======
+def scan_market():
+    global last_signals
+
+    for sym in SYMBOLS:
+        signal, rsi_signal, data = get_signal(sym)
+
+        if data is None:
+            continue
+
+        price = data['Close']
+        ma20 = data['MA20']
+        ma50 = data['MA50']
+        rsi = data['RSI']
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # MA signal
+        if signal and last_signals.get(sym) != signal:
+            msg = f"""
+📊 {sym}
+⏰ {now}
+
+🔥 SIGNAL: {signal}
+💰 Price: {round(price,2)}
+
+MA20: {round(ma20,2)}
+MA50: {round(ma50,2)}
+RSI: {round(rsi,1)}
+"""
+            send_telegram(msg)
+            last_signals[sym] = signal
+
+        # RSI signal riêng
+        if rsi_signal:
+            msg = f"""
+📊 {sym}
+
+⚡ RSI FILTER SIGNAL: {rsi_signal}
+RSI: {round(rsi,1)}
+"""
+            send_telegram(msg)
+
 # ====== MAIN LOOP ======
 def run_bot():
-    global update_id, last_signals
+    global update_id
 
-    send_telegram("🤖 Bot started")
+    send_telegram("🤖 Bot started (Render)")
+
+    # init update_id tránh spam cũ
+    updates = get_updates()
+    if updates["result"]:
+        update_id = updates["result"][-1]["update_id"] + 1
 
     while True:
         try:
-            # ===== READ TELEGRAM =====
+            # ===== đọc Telegram =====
             updates = get_updates(update_id)
 
-            for item in updates.get("result", []):
+            for item in updates["result"]:
                 update_id = item["update_id"] + 1
 
-                if "message" not in item:
-                    continue
+                if "message" in item:
+                    text = item["message"].get("text", "")
+                    print("Command:", text)
+                    handle_command(text)
 
-                message = item["message"]
-
-                if "text" not in message:
-                    continue
-
-                text = message["text"].strip()
-                print("CMD:", text)
-
-                handle_command(text)
-
-            # ===== SIGNAL SCAN =====
+            # ===== chạy scan =====
             if running:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                scan_market()
 
-                for symbol in SYMBOLS:
-                    result = get_signal(symbol)
-
-                    if not result or not result["signal"]:
-                        continue
-
-                    prev_signal = last_signals.get(symbol)
-
-                    if result["signal"] != prev_signal:
-                        msg = f"""
-📊 {symbol}
-⏰ {now}
-
-🔥 SIGNAL: {result['signal']}
-💰 Price: {result['price']}
-
-MA20: {result['ma20']}
-MA50: {result['ma50']}
-RSI: {result['rsi']}
-"""
-                        send_telegram(msg)
-
-                        # ===== RSI MESSAGE =====
-                        send_telegram(f"{symbol} → {result['rsi_note']}")
-
-                        last_signals[symbol] = result["signal"]
-
-            time.sleep(10)
+            time.sleep(5)
 
         except Exception as e:
-            print("MAIN ERROR:", e)
-            time.sleep(10)
+            print("MAIN LOOP ERROR:", e)
+            time.sleep(5)
 
 # ====== RUN ======
 if __name__ == "__main__":
