@@ -4,6 +4,7 @@ import time
 import requests
 from datetime import datetime
 import os
+import traceback
 
 # ====== CONFIG ======
 SYMBOLS = ["HPG.VN","DGC.VN","VIC.VN","NVL.VN","BSR.VN","ACB.VN","VCB.VN","BID.VN","BCM.VN","BVH.VN","CTG.VN","FPT.VN","GAS.VN","GVR.VN","HDB.VN","MBB.VN","MSN.VN","MSH.VN","MWG.VN","PLX.VN","POW.VN","SAB.VN","SHB.VN","TCB.VN","TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN"]
@@ -12,9 +13,6 @@ TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 RSI_PERIOD = 14
-RSI_OVERBOUGHT = 70
-RSI_OVERSOLD = 30
-
 SCAN_INTERVAL = 300  # 5 phút
 
 # ====== STATE ======
@@ -28,7 +26,7 @@ running = True
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print("Telegram error:", e)
 
@@ -36,30 +34,33 @@ def get_updates(offset=None):
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         params = {"timeout": 10, "offset": offset}
-        res = requests.get(url, params=params)
+        res = requests.get(url, params=params, timeout=15)
         return res.json()
     except:
         return {"result": []}
 
 # ====== INDICATORS ======
-def compute_rsi(series, period=14):
+def compute_rsi(series):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(RSI_PERIOD).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(RSI_PERIOD).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# ====== SIGNAL ======
+# ====== DATA ======
 def get_signal(symbol):
     try:
         data = yf.download(symbol, period="3mo", interval="1d", progress=False)
+
+        if data is None or data.empty:
+            return None, None, None
 
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
 
         data['MA20'] = data['Close'].rolling(20).mean()
         data['MA50'] = data['Close'].rolling(50).mean()
-        data['RSI'] = compute_rsi(data['Close'], RSI_PERIOD)
+        data['RSI'] = compute_rsi(data['Close'])
 
         data = data.dropna()
         if len(data) < 2:
@@ -69,23 +70,21 @@ def get_signal(symbol):
         curr = data.iloc[-1]
 
         signal = None
-        rsi_signal = None
 
         if prev['MA20'] < prev['MA50'] and curr['MA20'] > curr['MA50']:
             signal = "BUY"
         elif prev['MA20'] > prev['MA50'] and curr['MA20'] < curr['MA50']:
             signal = "SELL"
 
-        if curr['MA20'] > curr['MA50'] and curr['RSI'] < RSI_OVERBOUGHT:
-            rsi_signal = "BUY_RSI"
-        elif curr['MA20'] < curr['MA50'] and curr['RSI'] > RSI_OVERSOLD:
-            rsi_signal = "SELL_RSI"
+        return signal, curr
 
-        return signal, rsi_signal, curr
+    except Exception:
+        print(traceback.format_exc())
+        return None, None
 
-    except Exception as e:
-        print("Data error:", e)
-        return None, None, None
+# ====== FORMAT ======
+def format_data(sym, data, signal=None):
+    return f"{sym} | {signal or '-'} | {round(data['Close'],2)} | RSI {round(data['RSI'],1)} | MA20 {round(data['MA20'],2)} | MA50 {round(data['MA50'],2)}"
 
 # ====== COMMAND ======
 def handle_command(text):
@@ -106,54 +105,52 @@ def handle_command(text):
         send_telegram("⛔ Stopped")
 
     elif text == "/price":
-        msg = "📊 PRICE:\n"
+        msgs = []
         for sym in SYMBOLS:
-            _, _, data = get_signal(sym)
+            _, data = get_signal(sym)
             if data is not None:
-                msg += f"{sym}: {round(data['Close'],2)} | RSI {round(data['RSI'],1)}\n"
-        send_telegram(msg)
+                msgs.append(format_data(sym, data))
+        send_telegram("\n".join(msgs))
 
     elif text == "/overview":
-        msg = "📊 OVERVIEW:\n"
+        msgs = []
         for sym in SYMBOLS:
-            signal, rsi_signal, data = get_signal(sym)
+            signal, data = get_signal(sym)
             if data is not None:
-                msg += f"{sym}: {signal or '-'} | RSI {round(data['RSI'],1)}\n"
-        send_telegram(msg)
+                msgs.append(format_data(sym, data, signal))
+        send_telegram("\n".join(msgs))
 
     elif text == "/scan":
-        scan_market(send_all=True)
+        scan_market(force=True)
+
+    elif text == "/update":
+        send_telegram("🔄 Updating...")
+        scan_market(force=True)
 
     else:
         send_telegram("❓ Unknown command")
 
 # ====== SCAN ======
-def scan_market(send_all=False):
+def scan_market(force=False):
     global last_signals
 
-    messages = []
+    msgs = []
 
     for sym in SYMBOLS:
-        signal, rsi_signal, data = get_signal(sym)
+        signal, data = get_signal(sym)
         if data is None:
             continue
 
-        price = data['Close']
-        rsi = data['RSI']
+        if force:
+            msgs.append(format_data(sym, data, signal))
+            continue
 
         if signal and last_signals.get(sym) != signal:
-            messages.append(f"{sym} | {signal} | {round(price,2)} | RSI {round(rsi,1)}")
+            msgs.append(format_data(sym, data, signal))
             last_signals[sym] = signal
 
-        if rsi_signal and last_signals.get(sym+"_RSI") != rsi_signal:
-            messages.append(f"{sym} | {rsi_signal} | RSI {round(rsi,1)}")
-            last_signals[sym+"_RSI"] = rsi_signal
-
-        if send_all:
-            messages.append(f"{sym}: {round(price,2)} | RSI {round(rsi,1)}")
-
-    if messages:
-        send_telegram("\n".join(messages))
+    if msgs:
+        send_telegram("\n".join(msgs))
 
 # ====== TIME ======
 def is_market_open(now):
@@ -178,10 +175,9 @@ def run_bot():
             for item in updates["result"]:
                 update_id = item["update_id"] + 1
                 if "message" in item:
-                    text = item["message"].get("text", "")
-                    handle_command(text)
+                    handle_command(item["message"].get("text", ""))
 
-            # ===== MARKET LOGIC =====
+            # ===== AUTO MODE =====
             if running:
                 if is_market_open(now):
                     if time.time() - last_scan_time > SCAN_INTERVAL:
@@ -191,19 +187,26 @@ def run_bot():
                     hour = now.strftime("%H")
 
                     if hour == "11" and last_report_time["11"] != now.date():
-                        scan_market(send_all=True)
+                        scan_market(force=True)
                         last_report_time["11"] = now.date()
 
                     if hour == "14" and last_report_time["14"] != now.date():
-                        scan_market(send_all=True)
+                        scan_market(force=True)
                         last_report_time["14"] = now.date()
 
             time.sleep(10)
 
-        except Exception as e:
-            print("ERROR:", e)
-            time.sleep(60)
+        except Exception:
+            print("CRASH:")
+            print(traceback.format_exc())
+            time.sleep(10)
 
-# ====== RUN ======
+# ====== RUN SAFE ======
 if __name__ == "__main__":
-    run_bot()
+    while True:
+        try:
+            run_bot()
+        except Exception:
+            print("RESTARTING...")
+            print(traceback.format_exc())
+            time.sleep(5)
