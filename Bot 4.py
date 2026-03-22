@@ -202,11 +202,19 @@ def run_bot():
             if running:
                 scan_market()
 
-            time.sleep(5)
+            now = datetime.now()
+
+# giờ giao dịch: 9h - 15h
+if 9 <= now.hour < 15:
+    sleep_time = 180   # 3 phút
+else:
+    sleep_time = 1800  # 30 phút
+
+time.sleep(sleep_time)
 
         except Exception as e:
             print("MAIN LOOP ERROR:", e)
-            time.sleep(5)
+            time.sleep(1800)
 
 # ====== RUN ======
 if __name__ == "__main__":
