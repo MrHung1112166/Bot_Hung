@@ -9,19 +9,19 @@ import os
 SYMBOLS = ["HPG.VN", "DGC.VN","VIC.VN","NVL.VN","BSR.VN","ACB.VN","VCB.VN","BID.VN","BCM.VN","BVH.VN","CTG.VN","FPT.VN","GAS.VN","GVR.VN","HDB.VN","MBB.VN","MSN.VN","MSH.VN","MWG.VN","PLX.VN","POW.VN","SAB.VN","SHB.VN","TCB.VN","TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN"]
 INTERVAL = "1d"
 
-# Telegram ENV (Render)
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Trading params
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70
 RSI_OVERSOLD = 30
 
+SCAN_INTERVAL = 300  # 5 minutes
+
 # ====== STATE ======
-running = True
 last_signals = {}
-update_id = None
+last_scan_time = 0
+last_report_time = {"11": None, "14": None}
 
 # ====== TELEGRAM ======
 def send_telegram(msg):
@@ -30,15 +30,6 @@ def send_telegram(msg):
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
     except Exception as e:
         print("Telegram error:", e)
-
-def get_updates(offset=None):
-    try:
-        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-        params = {"timeout": 10, "offset": offset}
-        res = requests.get(url, params=params)
-        return res.json()
-    except:
-        return {"result": []}
 
 # ====== INDICATORS ======
 def compute_rsi(series, period=14):
@@ -51,7 +42,7 @@ def compute_rsi(series, period=14):
 # ====== SIGNAL ======
 def get_signal(symbol):
     try:
-        data = yf.download(symbol, period="3mo", interval=INTERVAL)
+        data = yf.download(symbol, period="3mo", interval=INTERVAL, progress=False)
 
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
@@ -61,6 +52,9 @@ def get_signal(symbol):
         data['RSI'] = compute_rsi(data['Close'], RSI_PERIOD)
 
         data = data.dropna()
+
+        if len(data) < 2:
+            return None, None, None
 
         prev = data.iloc[-2]
         curr = data.iloc[-1]
@@ -86,52 +80,11 @@ def get_signal(symbol):
         print("Data error:", e)
         return None, None, None
 
-# ====== COMMAND ======
-def handle_command(text):
-    global running
-
-    if text == "/start":
-        send_telegram("🤖 Bot ONLINE")
-
-    elif text == "/help":
-        send_telegram("""
-📌 COMMAND:
-/start
-/status
-/run
-/stop
-/price
-/scan
-""")
-
-    elif text == "/status":
-        send_telegram("🟢 RUNNING" if running else "🔴 STOPPED")
-
-    elif text == "/run":
-        running = True
-        send_telegram("🚀 Started")
-
-    elif text == "/stop":
-        running = False
-        send_telegram("⛔ Stopped")
-
-    elif text == "/price":
-        msg = "📊 PRICE:\n"
-        for sym in SYMBOLS:
-            _, _, data = get_signal(sym)
-            if data is not None:
-                msg += f"{sym}: {round(data['Close'],2)} | RSI {round(data['RSI'],1)}\n"
-        send_telegram(msg)
-
-    elif text == "/scan":
-        scan_market()
-
-    else:
-        send_telegram("❓ Unknown command")
-
 # ====== SCAN ======
-def scan_market():
+def scan_market(send_all=False):
     global last_signals
+
+    messages = []
 
     for sym in SYMBOLS:
         signal, rsi_signal, data = get_signal(sym)
@@ -140,75 +93,67 @@ def scan_market():
             continue
 
         price = data['Close']
-        ma20 = data['MA20']
-        ma50 = data['MA50']
         rsi = data['RSI']
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # ===== MA SIGNAL =====
+        # ===== SIGNAL ONLY =====
         if signal and last_signals.get(sym) != signal:
-            msg = f"""
-📊 {sym}
-⏰ {now}
-
-🔥 {signal}
-💰 {round(price,2)}
-
-MA20: {round(ma20,2)}
-MA50: {round(ma50,2)}
-RSI: {round(rsi,1)}
-"""
-            send_telegram(msg)
+            msg = f"{sym} | {signal} | {round(price,2)} | RSI {round(rsi,1)}"
+            messages.append(msg)
             last_signals[sym] = signal
 
-        # ===== RSI SIGNAL (ANTI SPAM) =====
         if rsi_signal and last_signals.get(sym+"_RSI") != rsi_signal:
-            msg = f"""
-📊 {sym}
-⚡ RSI SIGNAL: {rsi_signal}
-RSI: {round(rsi,1)}
-"""
-            send_telegram(msg)
+            msg = f"{sym} | {rsi_signal} | RSI {round(rsi,1)}"
+            messages.append(msg)
             last_signals[sym+"_RSI"] = rsi_signal
 
-# ====== MAIN ======
+        # ===== FORCE REPORT (off-market) =====
+        if send_all:
+            msg = f"{sym}: {round(price,2)} | RSI {round(rsi,1)}"
+            messages.append(msg)
+
+    if messages:
+        send_telegram("\n".join(messages))
+
+# ====== TIME CHECK ======
+def is_market_open(now):
+    return now.weekday() < 5 and 9 <= now.hour < 15
+
+# ====== MAIN LOOP ======
 def run_bot():
-    global update_id
+    global last_scan_time, last_report_time
 
-    send_telegram("🤖 Bot started (Render)")
-
-    # init update_id
-    updates = get_updates()
-    if updates["result"]:
-        update_id = updates["result"][-1]["update_id"] + 1
+    send_telegram("🤖 Bot started")
 
     while True:
         try:
-            # ===== TELEGRAM =====
-            updates = get_updates(update_id)
-
-            for item in updates["result"]:
-                update_id = item["update_id"] + 1
-
-                if "message" in item:
-                    text = item["message"].get("text", "")
-                    print("Command:", text)
-                    handle_command(text)
-
-            # ===== SCAN =====
-            if running:
-                scan_market()
-
-            # ===== TIME CONTROL =====
             now = datetime.now()
 
-            if 9 <= now.hour < 15:
-                sleep_time = 180     # 3 phút
-            else:
-                sleep_time = 1800    # 30 phút
+            # ===== MARKET HOURS =====
+            if is_market_open(now):
+                if time.time() - last_scan_time > SCAN_INTERVAL:
+                    print("Scanning market...")
+                    scan_market(send_all=False)
+                    last_scan_time = time.time()
 
-            print(f"Sleeping {sleep_time}s...")
-            time.sleep(sleep_time)
+            # ===== OFF MARKET REPORT =====
+            else:
+                hour = now.strftime("%H")
+
+                # 11h report
+                if hour == "11" and last_report_time["11"] != now.date():
+                    print("11h report")
+                    scan_market(send_all=True)
+                    last_report_time["11"] = now.date()
+
+                # 14h report
+                if hour == "14" and last_report_time["14"] != now.date():
+                    print("14h report")
+                    scan_market(send_all=True)
+                    last_report_time["14"] = now.date()
+
+            # ===== SLEEP CONTROL =====
+            time.sleep(10)
 
         except Exception as e:
             print("ERROR:", e)
