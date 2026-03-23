@@ -7,13 +7,23 @@ import os
 import traceback
 
 # ====== CONFIG ======
-SYMBOLS = ["HPG.VN","DGC.VN","VIC.VN","NVL.VN","BSR.VN","ACB.VN","VCB.VN","BID.VN","BCM.VN","BVH.VN","CTG.VN","FPT.VN","GAS.VN","GVR.VN","HDB.VN","MBB.VN","MSN.VN","MSH.VN","MWG.VN","PLX.VN","POW.VN","SAB.VN","SHB.VN","TCB.VN","TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN","PC1.VN","TNG.VN"]
+SYMBOLS = [
+    "HPG.VN","DGC.VN","VIC.VN","NVL.VN","BSR.VN","ACB.VN","VCB.VN","BID.VN",
+    "BCM.VN","BVH.VN","CTG.VN","FPT.VN","GAS.VN","GVR.VN","HDB.VN","MBB.VN",
+    "MSN.VN","MSH.VN","MWG.VN","PLX.VN","POW.VN","SAB.VN","SHB.VN","TCB.VN",
+    "TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN","PC1.VN","TNG.VN"
+]
 
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 RSI_PERIOD = 14
-SCAN_INTERVAL = 300  # 5 phút
+SCAN_INTERVAL = 900  # 15 phút (giảm tải)
+
+# ====== CACHE ======
+cache = {}
+cache_time = {}
+CACHE_TTL = 600  # 10 phút
 
 # ====== STATE ======
 last_signals = {}
@@ -22,22 +32,39 @@ last_report_time = {"11": None, "14": None}
 update_id = None
 running = True
 
+# ====== DEBUG ======
+print("=== BOT STARTING ===")
+print("TOKEN:", TOKEN)
+print("CHAT_ID:", CHAT_ID)
+
 # ====== TELEGRAM ======
 def send_telegram(msg):
     try:
+        if not TOKEN or not CHAT_ID:
+            print("Missing TOKEN or CHAT_ID")
+            return
+
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+
     except Exception as e:
         print("Telegram error:", e)
 
+
 def get_updates(offset=None):
     try:
+        if not TOKEN:
+            return {"result": []}
+
         url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
         params = {"timeout": 10, "offset": offset}
         res = requests.get(url, params=params, timeout=15)
         return res.json()
-    except:
+
+    except Exception as e:
+        print("GetUpdates error:", e)
         return {"result": []}
+
 
 # ====== INDICATORS ======
 def compute_rsi(series):
@@ -47,13 +74,27 @@ def compute_rsi(series):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+
 # ====== DATA ======
 def get_signal(symbol):
     try:
-        data = yf.download(symbol, period="3mo", interval="1d", progress=False)
+        now = time.time()
+
+        # ===== CACHE =====
+        if symbol in cache and now - cache_time[symbol] < CACHE_TTL:
+            return cache[symbol]
+
+        # ===== FETCH =====
+        data = yf.download(
+            symbol,
+            period="3mo",
+            interval="1d",
+            progress=False,
+            threads=False
+        )
 
         if data is None or data.empty:
-            return None, None, None
+            return None, None
 
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
@@ -64,7 +105,7 @@ def get_signal(symbol):
 
         data = data.dropna()
         if len(data) < 2:
-            return None, None, None
+            return None, None
 
         prev = data.iloc[-2]
         curr = data.iloc[-1]
@@ -76,19 +117,33 @@ def get_signal(symbol):
         elif prev['MA20'] > prev['MA50'] and curr['MA20'] < curr['MA50']:
             signal = "SELL"
 
-        return signal, curr
+        result = (signal, curr)
 
-    except Exception:
-        print(traceback.format_exc())
+        cache[symbol] = result
+        cache_time[symbol] = now
+
+        return result
+
+    except Exception as e:
+        print("YF ERROR:", e)
+
+        if "rate" in str(e).lower():
+            print("Rate limit hit → sleep 60s")
+            time.sleep(60)
+
         return None, None
+
 
 # ====== FORMAT ======
 def format_data(sym, data, signal=None):
     return f"{sym} | {signal or '-'} | {round(data['Close'],2)} | RSI {round(data['RSI'],1)} | MA20 {round(data['MA20'],2)} | MA50 {round(data['MA50'],2)}"
 
+
 # ====== COMMAND ======
 def handle_command(text):
     global running
+
+    print("Command:", text)
 
     if text == "/start":
         send_telegram("🤖 Bot ONLINE")
@@ -130,6 +185,7 @@ def handle_command(text):
     else:
         send_telegram("❓ Unknown command")
 
+
 # ====== SCAN ======
 def scan_market(force=False):
     global last_signals
@@ -137,6 +193,8 @@ def scan_market(force=False):
     msgs = []
 
     for sym in SYMBOLS:
+        time.sleep(1.5)  # chống rate limit
+
         signal, data = get_signal(sym)
         if data is None:
             continue
@@ -152,14 +210,17 @@ def scan_market(force=False):
     if msgs:
         send_telegram("\n".join(msgs))
 
+
 # ====== TIME ======
 def is_market_open(now):
     return now.weekday() < 5 and 9 <= now.hour < 15
+
 
 # ====== MAIN ======
 def run_bot():
     global update_id, last_scan_time, last_report_time
 
+    print("=== BOT LOOP STARTED ===")
     send_telegram("🤖 Bot started")
 
     updates = get_updates()
@@ -168,16 +229,18 @@ def run_bot():
 
     while True:
         try:
+            print(f"Loop at {datetime.now()}")
+
             now = datetime.now()
 
-            # ===== TELEGRAM =====
+            # TELEGRAM
             updates = get_updates(update_id)
             for item in updates["result"]:
                 update_id = item["update_id"] + 1
                 if "message" in item:
                     handle_command(item["message"].get("text", ""))
 
-            # ===== AUTO MODE =====
+            # AUTO MODE
             if running:
                 if is_market_open(now):
                     if time.time() - last_scan_time > SCAN_INTERVAL:
@@ -197,16 +260,15 @@ def run_bot():
             time.sleep(10)
 
         except Exception:
-            print("CRASH:")
-            print(traceback.format_exc())
+            print("CRASH:", traceback.format_exc())
             time.sleep(10)
 
-# ====== RUN SAFE ======
+
+# ====== RUN ======
 if __name__ == "__main__":
     while True:
         try:
             run_bot()
         except Exception:
-            print("RESTARTING...")
-            print(traceback.format_exc())
+            print("RESTARTING...", traceback.format_exc())
             time.sleep(5)
