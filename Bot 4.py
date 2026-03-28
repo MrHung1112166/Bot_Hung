@@ -11,8 +11,9 @@ SYMBOLS = [
     "HPG.VN","DGC.VN","VIC.VN","NVL.VN","BSR.VN","ACB.VN","VCB.VN","BID.VN",
     "BCM.VN","BVH.VN","CTG.VN","FPT.VN","GAS.VN","GVR.VN","HDB.VN","MBB.VN",
     "MSN.VN","MSH.VN","MWG.VN","PLX.VN","POW.VN","SAB.VN","SHB.VN","TCB.VN",
-    "TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN","PC1.VN","TNG.VN","DCM.VN","VGC.VN","PLX.VN","SAB.VN",
-    "DPM.VN","MWG.VN","ANV.VN","PAC.VN"
+    "TPB.VN","VHM.VN","VIB.VN","VNM.VN","VRE.VN","PC1.VN","TNG.VN","DCM.VN",
+    "DPM.VN","MWG.VN","ANV.VN","PAC.VN","GMD.VN","VGC.VN","PLX.VN","SAB.VN",
+    "KBC.VN","DXS.VN","SZC.VN"
 ]
 
 TOKEN = os.getenv("TOKEN")
