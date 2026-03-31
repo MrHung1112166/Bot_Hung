@@ -18,7 +18,7 @@ SYMBOLS = [
     "CEO.VN","IDC.VN","NT2.VN","PPC.VN","BWE.VN","TDM.VN","FRT.VN","DGW.VN",
     "PET.VN","COM.VN","VSC.VN","HAH.VN","PVT.VN","VIP.VN","CSV.VN","LAS.VN",
     "BMP.VN","NTP.VN","ACL.VN","VHC.VN","IDI.VN","PAN.VN","BAF.VN","DBC.VN",
-    "STB.VN","EIB.VN","OCB.VN","LPB.VN"
+    "STB.VN","EIB.VN","OCB.VN","LPB.VN","CII.VN"
 ]
 
 TOKEN = os.getenv("TOKEN")
